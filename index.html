@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+  <meta name="theme-color" content="#0f172a"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="FaceAnalytics"/>
+  <meta name="description" content="Scientific facial asymmetry analysis — on-device, private, real-time."/>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="icon" href="public/icons/icon.svg" type="image/svg+xml"/>
+  <link rel="apple-touch-icon" href="public/icons/apple-touch-icon.png"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+  <title>FaceAnalytics – Facial Asymmetry Analysis</title>
+
+  <!-- Tailwind CSS Play CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter','system-ui','sans-serif'],
+            mono: ['JetBrains Mono','monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    :root { color-scheme: dark; }
+    *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body, #root { height: 100%; margin: 0; padding: 0; }
+    body {
+      background: #020617;
+      color: #f8fafc;
+      font-family: 'Inter', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overscroll-behavior: none;
+      position: fixed;
+      width: 100%;
+      overflow: hidden;
+    }
+    .overflow-y-auto  { -webkit-overflow-scrolling: touch; overflow-y: auto; }
+    .pt-safe  { padding-top:    max(env(safe-area-inset-top,0px),12px); }
+    .pb-safe  { padding-bottom: max(env(safe-area-inset-bottom,0px),16px); }
+    .mirror   { transform: scaleX(-1); }
+
+    ::-webkit-scrollbar       { width: 3px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+
+    @keyframes fadeIn  { from{opacity:0}                            to{opacity:1} }
+    @keyframes slideUp { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }
+    @keyframes flash   { 0%,100%{opacity:0} 30%{opacity:1} }
+    @keyframes capturePulse {
+      0%  { box-shadow: 0 0 0 0   rgba(255,255,255,0.45); }
+      70% { box-shadow: 0 0 0 14px rgba(255,255,255,0);   }
+      100%{ box-shadow: 0 0 0 0   rgba(255,255,255,0);    }
+    }
+    .anim-fade  { animation: fadeIn  0.35s ease-out; }
+    .anim-slide { animation: slideUp 0.4s  ease-out; }
+    .anim-flash { animation: flash  0.4s  ease-out; }
+    .capture-ready { animation: capturePulse 2s infinite; }
+    .border-subtle { border-color: rgba(255,255,255,0.08); }
+    .bg-card       { background: rgba(255,255,255,0.04); }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React 18 -->
+<script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+<!-- Babel standalone for JSX -->
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.23.9/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+// ════════════════════════════════════════════════════════════════════════════
+//  CONFIG & CONSTANTS
+// ════════════════════════════════════════════════════════════════════════════
+const MP_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/';
+
+/** MediaPipe 468-point landmark indices (+ refined iris pts 468-477) */
+const LM = {
+  glabella:168, nasalBridge:6, nasalTip:4, subnasal:2, menton:152,
+  leftExo:263,  rightExo:33,
+  leftEndo:362, rightEndo:133,
+  leftPupil:473,  rightPupil:468,
+  leftBrowOut:300, rightBrowOut:70,
+  leftBrowIn:285,  rightBrowIn:55,
+  leftAlare:358,   rightAlare:129,
+  leftMouth:61,    rightMouth:291,
+  leftJaw:234,     rightJaw:454,
+  leftCheek:116,   rightCheek:345,
+};
+
+const PAIRS = [
+  {id:'pupil',    label:'Pupil Centre',            l:'leftPupil',   r:'rightPupil',   w:2.0},
+  {id:'exo',      label:'Outer Eye (Exocanthion)',  l:'leftExo',     r:'rightExo',     w:1.5},
+  {id:'endo',     label:'Inner Eye (Endocanthion)', l:'leftEndo',    r:'rightEndo',    w:1.5},
+  {id:'browOut',  label:'Outer Brow',               l:'leftBrowOut', r:'rightBrowOut', w:1.0},
+  {id:'alare',    label:'Nostril Wing (Alare)',     l:'leftAlare',   r:'rightAlare',   w:1.8},
+  {id:'mouth',    label:'Mouth Corner (Cheilion)', l:'leftMouth',   r:'rightMouth',   w:1.8},
+  {id:'jaw',      label:'Jaw Width',               l:'leftJaw',     r:'rightJaw',     w:1.2},
+];
+
+// ════════════════════════════════════════════════════════════════════════════
+//  MATH ENGINE
+// ════════════════════════════════════════════════════════════════════════════
+const sub   = (a,b)   => ({x:a.x-b.x, y:a.y-b.y});
+const dot   = (a,b)   => a.x*b.x + a.y*b.y;
+const vlen  = v       => Math.sqrt(v.x*v.x + v.y*v.y);
+const scale = (v,s)   => ({x:v.x*s, y:v.y*s});
+
+/** Perpendicular distance from point P to line (anchor A, unit direction dH) */
+function ptLineDist(P, A, dH) {
+  const ap = sub(P, A);
+  return vlen(sub(ap, scale(dH, dot(ap, dH))));
+}
+
+/**
+ * fitMidline(lm) → { A, dH }
+ * Least-squares principal-axis regression through midline anchor points.
+ * Implements the PCA of the 2D covariance matrix to find the dominant axis.
+ */
+function fitMidline(lm) {
+  const idxs = [LM.glabella, LM.nasalBridge, LM.nasalTip, LM.subnasal, LM.menton];
+  const pts  = idxs.map(i => lm[i]).filter(Boolean);
+  if (pts.length < 2) return null;
+  const n  = pts.length;
+  const mx = pts.reduce((s,p)=>s+p.x,0)/n;
+  const my = pts.reduce((s,p)=>s+p.y,0)/n;
+  let Sxx=0, Syy=0, Sxy=0;
+  pts.forEach(p => { const dx=p.x-mx, dy=p.y-my; Sxx+=dx*dx; Syy+=dy*dy; Sxy+=dx*dy; });
+  // Eigenvalue of 2×2 covariance → principal direction
+  const theta = (Math.abs(Sxx-Syy)<1e-10 && Math.abs(Sxy)<1e-10)
+    ? 0
+    : 0.5 * Math.atan2(2*Sxy, Sxx-Syy);
+  return { A:{x:mx,y:my}, dH:{x:Math.sin(theta), y:Math.cos(theta)} };
+}
+
+/** Signed angle (degrees) of vector b→a w.r.t. x-axis */
+const angleDeg = (a,b) => Math.atan2(a.y-b.y, a.x-b.x) * (180/Math.PI);
+
+/**
+ * estimatePose(lm) → { roll, yaw, pitch }
+ * Roll  = −angle of interpupillary line
+ * Yaw   = scaled left/right face-width asymmetry at nasal midpoint
+ * Pitch = normalised vertical offset of nasal tip from facial mid-height
+ */
+function estimatePose(lm) {
+  const lE  = lm[LM.leftPupil]  || lm[LM.leftExo];
+  const rE  = lm[LM.rightPupil] || lm[LM.rightExo];
+  const nose = lm[LM.nasalTip];
+  const brow = lm[LM.glabella];
+  const chin = lm[LM.menton];
+  const lJ   = lm[LM.leftJaw];
+  const rJ   = lm[LM.rightJaw];
+
+  const roll  = (lE && rE)
+    ? +(-angleDeg(lE,rE)).toFixed(2) : 0;
+
+  let yaw = 0;
+  if (nose && lJ && rJ) {
+    const lW=nose.x-lJ.x, rW=rJ.x-nose.x, tot=lW+rW;
+    if (tot>0.01) yaw = +((rW-lW)/tot*60).toFixed(2);
+  }
+
+  let pitch = 0;
+  if (nose && brow && chin) {
+    const fH = chin.y-brow.y;
+    if (fH>0.01) pitch = +((nose.y-(brow.y+chin.y)/2)/fH*60).toFixed(2);
+  }
+  return {roll, yaw, pitch};
+}
+
+/** Lighting analysis — compare left/right luminance */
+function checkLighting(imageData, lm) {
+  if (!imageData || !lm) return {ok:true, lL:128, lR:128, diff:0};
+  const nose = lm[LM.nasalTip];
+  if (!nose) return {ok:true, lL:128, lR:128, diff:0};
+  const midX = Math.floor(nose.x * imageData.width);
+  const d=imageData.data, w=imageData.width;
+  let lS=0,lC=0,rS=0,rC=0;
+  for (let y=0; y<imageData.height; y++)
+    for (let x=0; x<w; x++) {
+      const i=(y*w+x)*4;
+      const lum = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      if (x<midX) {lS+=lum;lC++;} else {rS+=lum;rC++;}
+    }
+  const lL=lC?Math.round(lS/lC):128, lR=rC?Math.round(rS/rC):128;
+  const diff=Math.abs(lL-lR);
+  return {ok:diff<30, lL, lR, diff:Math.round(diff)};
+}
+
+/** Face distance guard: ideal face-height ratio 30–75 % of frame */
+function checkDist(lm) {
+  const b=lm[LM.glabella], c=lm[LM.menton];
+  if (!b||!c) return {ok:false,status:'noFace',ratio:0};
+  const r = Math.abs(c.y-b.y);
+  if (r<0.30) return {ok:false,status:'tooFar',ratio:r};
+  if (r>0.75) return {ok:false,status:'tooClose',ratio:r};
+  return {ok:true,status:'ok',ratio:r};
+}
+
+/** Asymmetry colour scale: green(0%) → amber(10%) → rose(20%+) */
+function aiColor(pct) {
+  const t = Math.min(pct/20, 1);
+  if (t<0.5) {
+    const u=t*2;
+    return `rgb(${Math.round(16+(251-16)*u)},${Math.round(185+(191-185)*u)},${Math.round(129-129*u)})`;
+  }
+  const u=(t-0.5)*2;
+  return `rgb(${Math.round(251+(244-251)*u)},${Math.round(191-191*u)},0)`;
+}
+
+function toGrade(s) {
+  if (s<3)  return {label:'Highly Symmetric',  color:'#10b981', tier:'S'};
+  if (s<6)  return {label:'Very Symmetric',    color:'#22c55e', tier:'A'};
+  if (s<10) return {label:'Symmetric',         color:'#84cc16', tier:'B'};
+  if (s<15) return {label:'Mild Asymmetry',    color:'#f59e0b', tier:'C'};
+  if (s<22) return {label:'Moderate Asymmetry',color:'#f97316', tier:'D'};
+  return          {label:'Notable Asymmetry',  color:'#f43f5e', tier:'E'};
+}
+
+/**
+ * analyseAsymmetry(lm, imageData, W, H) → report
+ * Main entry point for the scientific analysis engine.
+ */
+function analyseAsymmetry(lm, imageData, W, H) {
+  const mid = fitMidline(lm);
+  if (!mid) return null;
+
+  const pairs = PAIRS.map(p => {
+    const Ll=lm[LM[p.l]], Lr=lm[LM[p.r]];
+    if (!Ll||!Lr) return {...p, valid:false, dL:0, dR:0, ai:0, aiPct:0};
+    const dL   = ptLineDist(Ll, mid.A, mid.dH);
+    const dR   = ptLineDist(Lr, mid.A, mid.dH);
+    const mean = (dL+dR)/2;
+    const ai   = Math.abs(dL-dR);
+    const aiPct= mean>1e-6 ? (ai/mean)*100 : 0;
+    const ang  = Math.abs(angleDeg(Ll,Lr));
+    return { ...p, valid:true,
+      dL: +(dL*1000).toFixed(3),
+      dR: +(dR*1000).toFixed(3),
+      ai: +(ai*1000).toFixed(3),
+      aiPct: +aiPct.toFixed(2),
+      horizDev: +(ang>90?180-ang:ang).toFixed(2),
+    };
+  });
+
+  const valid = pairs.filter(p=>p.valid);
+  const totW  = valid.reduce((s,p)=>s+p.w,0);
+  const score = totW>0 ? valid.reduce((s,p)=>s+p.aiPct*p.w,0)/totW : 0;
+
+  const lP = lm[LM.leftPupil]||lm[LM.leftExo];
+  const rP = lm[LM.rightPupil]||lm[LM.rightExo];
+  const lM2= lm[LM.leftMouth], rM2=lm[LM.rightMouth];
+
+  return {
+    score:    +score.toFixed(2),
+    grade:    toGrade(score),
+    pairs,
+    midline:  {Ax:mid.A.x, Ay:mid.A.y, Dx:mid.dH.x, Dy:mid.dH.y},
+    ipAngle:  (lP&&rP) ? +(-angleDeg(lP,rP)).toFixed(2) : 0,
+    icAngle:  (lM2&&rM2) ? +(-angleDeg(lM2,rM2)).toFixed(2) : 0,
+    pose:     estimatePose(lm),
+    light:    checkLighting(imageData, lm),
+    dist:     checkDist(lm),
+    keyPoints: Object.fromEntries(
+      Object.entries(LM).map(([k,i]) => [k, lm[i]?{x:lm[i].x,y:lm[i].y}:null])
+    ),
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  CANVAS OVERLAY DRAWING
+// ════════════════════════════════════════════════════════════════════════════
+const OVAL_CONN = [
+  [10,338],[338,297],[297,332],[332,284],[284,251],[251,389],[389,356],[356,454],
+  [454,323],[323,361],[361,288],[288,397],[397,365],[365,379],[379,378],[378,400],
+  [400,377],[377,152],[152,148],[148,176],[176,149],[149,150],[150,136],[136,172],
+  [172,58],[58,132],[132,93],[93,234],[234,127],[127,162],[162,21],[21,54],
+  [54,103],[103,67],[67,109],[109,10],
+];
+const L_EYE_CONN = [
+  [362,382],[382,381],[381,380],[380,374],[374,373],[373,390],[390,249],[249,263],
+  [263,466],[466,388],[388,387],[387,386],[386,385],[385,384],[384,398],[398,362],
+];
+const R_EYE_CONN = [
+  [33,7],[7,163],[163,144],[144,145],[145,153],[153,154],[154,155],[155,133],
+  [133,173],[173,157],[157,158],[158,159],[159,160],[160,161],[161,246],[246,33],
+];
+const LIPS_CONN = [
+  [61,146],[146,91],[91,181],[181,84],[84,17],[17,314],[314,405],[405,321],[321,375],[375,291],
+  [61,185],[185,40],[40,39],[39,37],[37,0],[0,267],[267,269],[269,270],[270,409],[409,291],
+];
+
+/** Convert normalised landmark to canvas pixel — mirrored (matches mirrored video) */
+const lmPx = (lm, W, H) => ({ x:(1-lm.x)*W, y:lm.y*H });
+
+function drawOverlay(canvas, lm, opts) {
+  const ctx=canvas.getContext('2d');
+  const W=canvas.width, H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  // ── Grid ─────────────────────────────────────────────────────────────────
+  if (opts.grid) {
+    ctx.strokeStyle='rgba(255,255,255,0.09)'; ctx.lineWidth=0.8; ctx.beginPath();
+    [1/3,2/3].forEach(t=>{
+      ctx.moveTo(t*W,0); ctx.lineTo(t*W,H);
+      ctx.moveTo(0,t*H); ctx.lineTo(W,t*H);
+    });
+    ctx.stroke();
+    ctx.strokeStyle='rgba(251,191,36,0.16)'; ctx.lineWidth=1; ctx.setLineDash([4,6]); ctx.beginPath();
+    [0.382,0.618].forEach(t=>{
+      ctx.moveTo(t*W,0); ctx.lineTo(t*W,H);
+      ctx.moveTo(0,t*H); ctx.lineTo(W,t*H);
+    });
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // ── Oval silhouette guide ─────────────────────────────────────────────────
+  {
+    const c = opts.detected ? 'rgba(16,185,129,0.9)' : 'rgba(99,202,247,0.55)';
+    ctx.strokeStyle=c; ctx.lineWidth=opts.detected?2.5:2;
+    ctx.shadowBlur=opts.detected?14:0; ctx.shadowColor=c;
+    ctx.beginPath(); ctx.ellipse(W*0.5,H*0.46,W*0.27,H*0.37,0,0,Math.PI*2); ctx.stroke();
+    ctx.shadowBlur=0;
+  }
+
+  if (!lm) return;
+
+  // ── Tessellation ──────────────────────────────────────────────────────────
+  if (opts.lmarks) {
+    const drawEdges=(edges,color,lw)=>{
+      ctx.strokeStyle=color; ctx.lineWidth=lw; ctx.beginPath();
+      edges.forEach(([a,b])=>{
+        if (!lm[a]||!lm[b]) return;
+        const pa=lmPx(lm[a],W,H), pb=lmPx(lm[b],W,H);
+        ctx.moveTo(pa.x,pa.y); ctx.lineTo(pb.x,pb.y);
+      });
+      ctx.stroke();
+    };
+    drawEdges(OVAL_CONN,  'rgba(120,200,255,0.22)', 1  );
+    drawEdges(L_EYE_CONN, 'rgba(120,200,255,0.50)', 1.2);
+    drawEdges(R_EYE_CONN, 'rgba(120,200,255,0.50)', 1.2);
+    drawEdges(LIPS_CONN,  'rgba(255,150,150,0.40)', 1  );
+  }
+
+  // ── Key landmark dots ─────────────────────────────────────────────────────
+  if (opts.lmarks) {
+    [
+      {i:LM.glabella,  c:'rgba(251,191,36,1)',   r:3},
+      {i:LM.nasalTip,  c:'rgba(251,191,36,1)',   r:3},
+      {i:LM.menton,    c:'rgba(251,191,36,1)',   r:3},
+      {i:LM.leftPupil, c:'rgba(139,92,246,0.9)', r:4},
+      {i:LM.rightPupil,c:'rgba(244,63,94,0.9)',  r:4},
+      {i:LM.leftAlare, c:'rgba(139,92,246,0.8)', r:3},
+      {i:LM.rightAlare,c:'rgba(244,63,94,0.8)',  r:3},
+      {i:LM.leftMouth, c:'rgba(139,92,246,0.8)', r:3},
+      {i:LM.rightMouth,c:'rgba(244,63,94,0.8)',  r:3},
+    ].forEach(({i,c,r})=>{
+      const pt=lm[i]; if(!pt) return;
+      const {x,y}=lmPx(pt,W,H);
+      ctx.fillStyle=c; ctx.shadowBlur=6; ctx.shadowColor=c;
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+      ctx.shadowBlur=0;
+    });
+  }
+
+  // ── Midline ───────────────────────────────────────────────────────────────
+  if (opts.midline) {
+    const anchors = [LM.glabella,LM.nasalBridge,LM.nasalTip,LM.subnasal,LM.menton]
+      .map(i=>lm[i]).filter(Boolean).map(p=>lmPx(p,W,H));
+    if (anchors.length>1) {
+      ctx.strokeStyle='rgba(251,191,36,0.85)'; ctx.lineWidth=1.5;
+      ctx.setLineDash([6,5]); ctx.shadowBlur=8; ctx.shadowColor='#facc15';
+      ctx.beginPath();
+      ctx.moveTo(anchors[0].x, 0);
+      anchors.forEach(p=>ctx.lineTo(p.x,p.y));
+      ctx.lineTo(anchors[anchors.length-1].x, H);
+      ctx.stroke(); ctx.setLineDash([]); ctx.shadowBlur=0;
+    }
+    // Bilateral guide lines (faint)
+    [[LM.leftPupil,LM.rightPupil],[LM.leftAlare,LM.rightAlare],[LM.leftMouth,LM.rightMouth]]
+    .forEach(([a,b])=>{
+      if (!lm[a]||!lm[b]) return;
+      const pa=lmPx(lm[a],W,H), pb=lmPx(lm[b],W,H);
+      ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=0.8;
+      ctx.setLineDash([3,4]); ctx.beginPath(); ctx.moveTo(pa.x,pa.y); ctx.lineTo(pb.x,pb.y); ctx.stroke();
+      ctx.setLineDash([]);
+    });
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  INTRO SCREEN
+// ════════════════════════════════════════════════════════════════════════════
+function IntroScreen({onStart}) {
+  const features = [
+    {emoji:'🔬',title:'MediaPipe Face Mesh',     desc:'468+ facial landmarks mapped in real time at 30 fps.'},
+    {emoji:'📐',title:'Sagittal-Plane Midline',  desc:'Principal-axis best-fit through Glabella → Menton.'},
+    {emoji:'📊',title:'Asymmetry Index (AI)',    desc:'AI = |d(Lₗ,M) − d(Lᵣ,M)| / mean × 100 % per bilateral pair.'},
+    {emoji:'🌡️',title:'Asymmetry Heatmap',      desc:'Per-region heat-map and Left-Left vs Right-Right split visualisation.'},
+    {emoji:'📱',title:'Standardised Capture',   desc:'Real-time Roll/Yaw/Pitch guard + lighting & distance checks.'},
+  ];
+  return (
+    <div className="flex flex-col min-h-screen bg-slate-950 overflow-y-auto anim-fade">
+      <div className="relative flex flex-col items-center px-6 pt-16 pb-10 text-center">
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-72 h-72 rounded-full pointer-events-none"
+          style={{background:'radial-gradient(circle,rgba(6,182,212,0.12) 0%,transparent 70%)'}}/>
+        <div className="relative z-10">
+          <div className="mx-auto mb-6 w-24 h-24 rounded-3xl flex items-center justify-center shadow-xl"
+            style={{background:'linear-gradient(135deg,#06b6d4,#8b5cf6)',boxShadow:'0 20px 40px rgba(6,182,212,0.2)'}}>
+            <svg viewBox="0 0 40 40" className="w-14 h-14" fill="none">
+              <ellipse cx="20" cy="18" rx="11" ry="14" stroke="white" strokeWidth="1.8"/>
+              <circle cx="15" cy="14" r="2" fill="white" opacity=".9"/>
+              <circle cx="25" cy="14" r="2" fill="white" opacity=".9"/>
+              <line x1="20" y1="4" x2="20" y2="36" stroke="#facc15" strokeWidth="1.2" strokeDasharray="2 2"/>
+              <line x1="15" y1="14" x2="25" y2="14" stroke="rgba(255,255,255,0.4)" strokeWidth="0.8"/>
+              <line x1="14" y1="22" x2="26" y2="22" stroke="rgba(255,255,255,0.4)" strokeWidth="0.8"/>
+            </svg>
+          </div>
+          <h1 className="text-3xl font-bold text-white tracking-tight">FaceAnalytics</h1>
+          <p className="mt-1 text-cyan-400 text-xs font-medium uppercase tracking-widest">Facial Symmetry Analysis</p>
+          <p className="mt-4 text-white/55 text-sm max-w-xs leading-relaxed mx-auto">
+            Scientific, privacy-first facial asymmetry analysis. All AI processing is on-device — no photos are uploaded.
+          </p>
+        </div>
+      </div>
+      <div className="px-5 pb-6 space-y-3 max-w-md mx-auto w-full">
+        {features.map((f,i) => (
+          <div key={i} className="flex gap-4 rounded-2xl px-4 py-3 border border-subtle bg-card">
+            <span className="text-2xl mt-0.5">{f.emoji}</span>
+            <div>
+              <p className="text-white text-sm font-semibold">{f.title}</p>
+              <p className="text-white/45 text-xs leading-relaxed mt-0.5">{f.desc}</p>
+            </div>
+          </div>
+        ))}
+        <p className="text-white/25 text-xs text-center pt-2 leading-relaxed">
+          Educational and research purposes only · Not medical advice
+        </p>
+      </div>
+      <div className="sticky bottom-0 bg-slate-950/90 backdrop-blur-sm px-5 pt-4 pb-safe">
+        <button onClick={onStart}
+          className="w-full max-w-md mx-auto block font-semibold text-base py-4 rounded-2xl text-white active:scale-95 transition-transform"
+          style={{background:'linear-gradient(90deg,#06b6d4,#8b5cf6)',boxShadow:'0 8px 24px rgba(6,182,212,0.25)'}}>
+          Start Analysis
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  CAMERA VIEW
+// ════════════════════════════════════════════════════════════════════════════
+function CameraView({onCapture, onBack}) {
+  const videoRef   = React.useRef(null);
+  const canvasRef  = React.useRef(null);
+  const streamRef  = React.useRef(null);
+  const fmRef      = React.useRef(null);
+  const rafRef     = React.useRef(null);
+  const lmRef      = React.useRef(null);
+  const optsRef    = React.useRef({grid:true, midline:true, lmarks:true, detected:false});
+
+  const [showGrid,     setShowGrid]     = React.useState(true);
+  const [showMidline,  setShowMidline]  = React.useState(true);
+  const [showLmarks,   setShowLmarks]   = React.useState(true);
+  const [loading,      setLoading]      = React.useState(true);
+  const [camError,     setCamError]     = React.useState(null);
+  const [detected,     setDetected]     = React.useState(false);
+  const [poseWarn,     setPoseWarn]     = React.useState(null);
+  const [pose,         setPose]         = React.useState({roll:0,yaw:0,pitch:0});
+  const [distOk,       setDistOk]       = React.useState(false);
+  const [countdown,    setCountdown]    = React.useState(null);
+  const [capturing,    setCapturing]    = React.useState(false);
+  const [flash,        setFlash]        = React.useState(false);
+
+  // Sync opts ref with state (avoids stale closures in RAF loop)
+  React.useEffect(() => {
+    optsRef.current = {grid:showGrid, midline:showMidline, lmarks:showLmarks, detected: !!lmRef.current};
+  }, [showGrid, showMidline, showLmarks]);
+
+  const readyToCapture = detected && !poseWarn && distOk && !loading;
+
+  // ── Initialise camera + MediaPipe ───────────────────────────────────────
+  React.useEffect(() => {
+    let alive = true;
+
+    async function init() {
+      // 1. Camera stream
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video:{facingMode:'user',width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30}},
+          audio:false,
+        });
+      } catch(e) {
+        if(alive) setCamError('Camera access denied. Please allow camera permission and reload the page.');
+        return;
+      }
+      streamRef.current = stream;
+      const vid = videoRef.current;
+      if (!vid || !alive) { stream.getTracks().forEach(t=>t.stop()); return; }
+      vid.srcObject = stream;
+      vid.setAttribute('playsinline','');
+      await vid.play().catch(()=>{});
+
+      // 2. Sync canvas to video element size
+      const syncCanvas = () => {
+        const cv = canvasRef.current;
+        if (!cv || !vid) return;
+        const r = vid.getBoundingClientRect();
+        if (cv.width!==r.width || cv.height!==r.height) { cv.width=r.width; cv.height=r.height; }
+      };
+      const ro = new ResizeObserver(syncCanvas);
+      ro.observe(vid); syncCanvas();
+
+      // 3. Load MediaPipe FaceMesh script from CDN
+      if (!window.FaceMesh) {
+        await new Promise((res, rej) => {
+          const s = document.createElement('script');
+          s.src = `${MP_CDN}face_mesh.js`; s.crossOrigin='anonymous';
+          s.onload = res; s.onerror = () => rej(new Error('MediaPipe CDN load failed'));
+          document.head.appendChild(s);
+        });
+      }
+
+      // 4. Initialise FaceMesh
+      const fm = new window.FaceMesh({ locateFile: f=>`${MP_CDN}${f}` });
+      fm.setOptions({
+        maxNumFaces:1, refineLandmarks:true,
+        minDetectionConfidence:0.6, minTrackingConfidence:0.6,
+      });
+      fm.onResults(res => {
+        if (!alive) return;
+        if (!res.multiFaceLandmarks?.length) {
+          lmRef.current = null; optsRef.current.detected = false;
+          if(alive) { setDetected(false); setDistOk(false); setPoseWarn('No face — align with the oval guide'); }
+          return;
+        }
+        const lm = res.multiFaceLandmarks[0];
+        lmRef.current = lm; optsRef.current.detected = true;
+        const p = estimatePose(lm);
+        const d = checkDist(lm);
+        if(alive) {
+          setDetected(true); setPose(p); setDistOk(d.ok);
+          const msgs=[];
+          if(Math.abs(p.roll)>8)   msgs.push(`Tilt ${p.roll>0?'right':'left'} ${Math.abs(p.roll).toFixed(1)}°`);
+          if(Math.abs(p.yaw)>12)   msgs.push(`Turn ${p.yaw>0?'right':'left'} ${Math.abs(p.yaw).toFixed(1)}°`);
+          if(Math.abs(p.pitch)>10) msgs.push(`${p.pitch>0?'Chin up':'Chin down'} ${Math.abs(p.pitch).toFixed(1)}°`);
+          if(!d.ok) msgs.push(d.status==='tooClose'?'Move back':'Move closer');
+          setPoseWarn(msgs.length ? msgs.join(' · ') : null);
+        }
+      });
+      await fm.initialize();
+      fmRef.current = fm;
+      if(alive) setLoading(false);
+
+      // 5. RAF inference loop
+      const loop = async () => {
+        if (!alive) return;
+        const v=videoRef.current, cv=canvasRef.current;
+        if (v && v.readyState>=2) {
+          await fm.send({image:v});
+          if (cv) drawOverlay(cv, lmRef.current, optsRef.current);
+        }
+        rafRef.current = requestAnimationFrame(loop);
+      };
+      rafRef.current = requestAnimationFrame(loop);
+    }
+
+    init().catch(e => {
+      console.error('[CameraView]', e);
+      if(alive) setCamError('Could not initialise face detection. Check your internet connection.');
+    });
+
+    return () => {
+      alive = false;
+      if(rafRef.current) cancelAnimationFrame(rafRef.current);
+      if(fmRef.current) try{fmRef.current.close();}catch(_){}
+      if(streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Capture logic ────────────────────────────────────────────────────────
+  const doCapture = React.useCallback(() => {
+    const vid = videoRef.current;
+    const lm  = lmRef.current;
+    if (!vid || !lm) { setCapturing(false); return; }
+
+    const W=vid.videoWidth||640, H=vid.videoHeight||480;
+    const off=document.createElement('canvas'); off.width=W; off.height=H;
+    const ctx=off.getContext('2d');
+    // Mirror to match what the user sees
+    ctx.save(); ctx.translate(W,0); ctx.scale(-1,1); ctx.drawImage(vid,0,0,W,H); ctx.restore();
+    const imageData = ctx.getImageData(0,0,W,H);
+    const photoURL  = off.toDataURL('image/jpeg',0.92);
+
+    const report = analyseAsymmetry(lm, imageData, W, H);
+    if (!report) { setCapturing(false); return; }
+
+    setFlash(true); setTimeout(()=>setFlash(false), 300);
+
+    // Stop all resources
+    if(rafRef.current) cancelAnimationFrame(rafRef.current);
+    if(fmRef.current) try{fmRef.current.close();}catch(_){}
+    if(streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
+
+    setTimeout(()=>onCapture({...report, photoURL, photoW:W, photoH:H}), 350);
+  }, [onCapture]);
+
+  const handleCapture = React.useCallback(() => {
+    if (capturing || !readyToCapture) return;
+    setCapturing(true);
+    let c=3; setCountdown(c);
+    const iv = setInterval(()=>{
+      c--;
+      if(c===0){ clearInterval(iv); setCountdown(null); doCapture(); }
+      else setCountdown(c);
+    },1000);
+  }, [capturing, readyToCapture, doCapture]);
+
+  return (
+    <div className="relative flex flex-col h-screen bg-black overflow-hidden">
+      {flash && <div className="absolute inset-0 z-50 bg-white pointer-events-none anim-flash"/>}
+
+      <div className="relative flex-1 overflow-hidden">
+        <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover mirror"/>
+        <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none"/>
+
+        {/* Top bar */}
+        <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 pt-safe pb-2">
+          <button onClick={onBack}
+            className="flex items-center justify-center w-9 h-9 rounded-xl text-white active:scale-95 transition-transform"
+            style={{background:'rgba(0,0,0,0.45)',backdropFilter:'blur(8px)'}}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+              <path d="M19 12H5M12 5l-7 7 7 7"/>
+            </svg>
+          </button>
+          <span className="text-white/75 text-sm font-medium tracking-wide">FaceAnalytics</span>
+          <div className="flex gap-1.5">
+            {[
+              {lbl:'Grid',  v:showGrid,    s:setShowGrid,    c:'text-amber-400'},
+              {lbl:'Mid',   v:showMidline, s:setShowMidline, c:'text-cyan-400'},
+              {lbl:'LM',    v:showLmarks,  s:setShowLmarks,  c:'text-violet-400'},
+            ].map(({lbl,v,s,c})=>(
+              <button key={lbl} onClick={()=>s(x=>!x)}
+                className={`text-xs px-2 py-1 rounded-lg font-medium transition-colors ${v?c:'text-white/30'}`}
+                style={{background:'rgba(0,0,0,0.45)',backdropFilter:'blur(8px)'}}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Loading overlay */}
+        {loading && !camError && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4"
+            style={{background:'rgba(0,0,0,0.72)'}}>
+            <div className="w-12 h-12 rounded-full border-4 border-cyan-500 border-t-transparent animate-spin"/>
+            <p className="text-white/65 text-sm">Loading face detection model…</p>
+            <p className="text-white/30 text-xs">First load: ~15 s (cached afterwards)</p>
+          </div>
+        )}
+
+        {/* Error overlay */}
+        {camError && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 px-8 text-center"
+            style={{background:'rgba(0,0,0,0.85)'}}>
+            <div className="text-5xl">⚠️</div>
+            <p className="text-white font-semibold">{camError}</p>
+            <button onClick={()=>window.location.reload()}
+              className="mt-2 px-6 py-3 rounded-xl font-semibold text-white"
+              style={{background:'#06b6d4'}}>Reload</button>
+          </div>
+        )}
+
+        {/* Countdown */}
+        {countdown!==null && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none">
+            <span className="text-white font-bold drop-shadow-2xl" style={{fontSize:'9rem'}}>{countdown}</span>
+          </div>
+        )}
+
+        {/* Pose warning */}
+        {poseWarn && !loading && (
+          <div className="absolute left-4 right-4 z-10 flex justify-center" style={{bottom:'9rem'}}>
+            <div className="rounded-xl px-4 py-2 max-w-sm" style={{background:'rgba(245,158,11,0.92)',backdropFilter:'blur(8px)'}}>
+              <p className="text-amber-950 text-sm font-medium text-center">⚠ {poseWarn}</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Bottom controls bar */}
+      <div className="z-10 px-5 pb-safe pt-3" style={{background:'rgba(0,0,0,0.92)',backdropFilter:'blur(12px)'}}>
+        {/* Status chips */}
+        <div className="flex gap-2 justify-center pb-3 flex-wrap">
+          {[
+            {id:'face', ok:detected,         label:detected?'Face detected':'No face'},
+            {id:'pose', ok:!poseWarn,        label:poseWarn?'Adjust head':'Head straight'},
+            {id:'dist', ok:distOk,           label:distOk?'Good distance':'Adjust distance'},
+          ].map(({id,ok,label})=>(
+            <div key={id}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border
+                ${ok?'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
+                    :'border-rose-500/40 bg-rose-500/10 text-rose-400'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${ok?'bg-emerald-400':'bg-rose-400'}`}/>
+              {label}
+            </div>
+          ))}
+        </div>
+
+        {/* Head-pose readout */}
+        {detected && !loading && (
+          <div className="flex justify-center gap-6 pb-3">
+            {[{l:'Roll',v:pose.roll,t:8},{l:'Yaw',v:pose.yaw,t:12},{l:'Pitch',v:pose.pitch,t:10}].map(({l,v,t})=>(
+              <div key={l} className="flex flex-col items-center">
+                <span className={`text-base font-mono font-semibold ${Math.abs(v)<t?'text-emerald-400':'text-amber-400'}`}>
+                  {v>0?'+':''}{v}°
+                </span>
+                <span className="text-white/40 text-xs">{l}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Capture button */}
+        <div className="flex justify-center pb-2">
+          <button onClick={handleCapture} disabled={capturing||loading}
+            className={`relative w-20 h-20 rounded-full flex items-center justify-center
+              active:scale-95 transition-all duration-150
+              ${readyToCapture?'bg-white text-slate-900 capture-ready':'bg-white/20 text-white/35 cursor-not-allowed'}`}>
+            {capturing && countdown===null
+              ? <div className="w-8 h-8 rounded-full border-4 border-slate-800 border-t-transparent animate-spin"/>
+              : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-8 h-8">
+                  <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/>
+                </svg>
+            }
+          </button>
+        </div>
+        {!readyToCapture && !loading && !camError && (
+          <p className="text-center text-white/30 text-xs pb-1">Align face with oval to enable capture</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  RESULTS PANEL
+// ════════════════════════════════════════════════════════════════════════════
+
+// — Score gauge ————————————————————————————————————————————————————
+function ScoreGauge({score, grade}) {
+  const R=70, CX=90, FULL=2*Math.PI*R, SWEEP=(240/360)*FULL;
+  const arcLen = Math.max(0, (1 - Math.min(score,30)/30)) * SWEEP;
+  return (
+    <div className="flex flex-col items-center">
+      <svg viewBox="0 0 180 160" className="w-48 h-44">
+        <circle cx={CX} cy={CX} r={R} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth={10}
+          strokeDasharray={`${SWEEP} ${FULL-SWEEP}`} strokeLinecap="round"
+          transform={`rotate(150 ${CX} ${CX})`}/>
+        <circle cx={CX} cy={CX} r={R} fill="none" stroke={grade.color} strokeWidth={10}
+          strokeDasharray={`${arcLen} ${FULL-arcLen}`} strokeLinecap="round"
+          transform={`rotate(150 ${CX} ${CX})`}
+          style={{transition:'stroke-dasharray 1s ease',filter:`drop-shadow(0 0 8px ${grade.color}88)`}}/>
+        <text x={CX} y={CX-6}  textAnchor="middle" fill={grade.color}
+          fontSize="28" fontWeight="700" fontFamily="JetBrains Mono,monospace">
+          {score.toFixed(1)}
+        </text>
+        <text x={CX} y={CX+14} textAnchor="middle" fill="rgba(255,255,255,0.4)"
+          fontSize="10" fontFamily="Inter,sans-serif" letterSpacing="1">AI SCORE %</text>
+        <text x={CX} y={CX+44} textAnchor="middle" fill={grade.color}
+          fontSize="22" fontWeight="700" fontFamily="JetBrains Mono,monospace">{grade.tier}</text>
+      </svg>
+      <p className="font-semibold text-base" style={{color:grade.color}}>{grade.label}</p>
+      <p className="text-white/35 text-xs mt-0.5">Weighted Asymmetry Index</p>
+    </div>
+  );
+}
+
+// — Heatmap canvas ————————————————————————————————————————————————
+function HeatmapPhoto({photoURL, photoW, photoH, report}) {
+  const ref = React.useRef(null);
+  React.useEffect(()=>{
+    const cv=ref.current; if(!cv||!photoURL) return;
+    const ctx=cv.getContext('2d');
+    cv.width=photoW; cv.height=photoH;
+    const img=new Image();
+    img.onload=()=>{
+      ctx.drawImage(img,0,0,photoW,photoH);
+      const M=report.midline, W=photoW, H=photoH;
+      // Midline (photo is already mirrored, so mirror x)
+      const mAx=(1-M.Ax)*W, mAy=M.Ay*H;
+      const mDx=-M.Dx,      mDy=M.Dy;
+      ctx.strokeStyle='rgba(251,191,36,0.9)'; ctx.lineWidth=2;
+      ctx.setLineDash([8,6]); ctx.shadowBlur=10; ctx.shadowColor='#facc15';
+      ctx.beginPath();
+      ctx.moveTo(mAx-mDx*1500, mAy-mDy*1500);
+      ctx.lineTo(mAx+mDx*1500, mAy+mDy*1500);
+      ctx.stroke(); ctx.setLineDash([]); ctx.shadowBlur=0;
+      // Bilateral heatmap
+      report.pairs.filter(p=>p.valid).forEach(p=>{
+        const Ll=report.keyPoints[p.l], Lr=report.keyPoints[p.r];
+        if (!Ll||!Lr) return;
+        const ptL={x:(1-Ll.x)*W, y:Ll.y*H};
+        const ptR={x:(1-Lr.x)*W, y:Lr.y*H};
+        const c=aiColor(p.aiPct);
+        ctx.strokeStyle=c+'60'; ctx.lineWidth=1.5;
+        ctx.beginPath(); ctx.moveTo(ptL.x,ptL.y); ctx.lineTo(ptR.x,ptR.y); ctx.stroke();
+        [ptL,ptR].forEach(pt=>{
+          ctx.fillStyle=c; ctx.shadowBlur=10; ctx.shadowColor=c;
+          ctx.beginPath(); ctx.arc(pt.x,pt.y,5,0,Math.PI*2); ctx.fill(); ctx.shadowBlur=0;
+        });
+        if(p.aiPct>3){
+          const mx=(ptL.x+ptR.x)/2, my=Math.min(ptL.y,ptR.y)-10;
+          ctx.fillStyle=c; ctx.font=`bold ${W>600?11:9}px "JetBrains Mono",monospace`;
+          ctx.textAlign='center'; ctx.textBaseline='bottom';
+          ctx.fillText(`${p.aiPct.toFixed(1)}%`, mx, my);
+        }
+      });
+    };
+    img.src=photoURL;
+  },[photoURL,photoW,photoH,report]);
+  return <canvas ref={ref} className="w-full h-auto rounded-2xl shadow-xl" style={{maxHeight:'55vh',objectFit:'contain'}}/>;
+}
+
+// — Split-face ————————————————————————————————————————————————————
+function SplitFaceView({photoURL, photoW, photoH, midNorm}) {
+  const lRef=React.useRef(null), rRef=React.useRef(null);
+  React.useEffect(()=>{
+    if(!photoURL||!photoW||!photoH) return;
+    const img=new Image();
+    img.onload=()=>{
+      const draw=(cv,side)=>{
+        if(!cv) return;
+        cv.width=photoW; cv.height=photoH;
+        const ctx=cv.getContext('2d');
+        // midNorm is in normalised space; in the captured (mirrored) photo:
+        const midPx = (1-midNorm)*photoW;
+        ctx.drawImage(img,0,0,photoW,photoH);
+        // Mask the opposite half
+        ctx.save(); ctx.globalCompositeOperation='destination-in'; ctx.fillStyle='black'; ctx.beginPath();
+        side==='left' ? ctx.rect(0,0,midPx,photoH) : ctx.rect(midPx,0,photoW-midPx,photoH);
+        ctx.fill(); ctx.restore();
+        // Mirror kept half onto the masked half
+        ctx.save(); ctx.translate(2*midPx,0); ctx.scale(-1,1);
+        ctx.drawImage(img,0,0,photoW,photoH);
+        ctx.globalCompositeOperation='destination-in'; ctx.fillStyle='black'; ctx.beginPath();
+        side==='left' ? ctx.rect(midPx,0,photoW-midPx,photoH) : ctx.rect(0,0,midPx,photoH);
+        ctx.fill(); ctx.restore();
+      };
+      draw(lRef.current,'left'); draw(rRef.current,'right');
+    };
+    img.src=photoURL;
+  },[photoURL,photoW,photoH,midNorm]);
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <div className="text-center">
+        <p className="text-violet-400 text-xs font-medium mb-2 uppercase tracking-wide">Left × 2</p>
+        <canvas ref={lRef} className="w-full rounded-xl shadow-lg"/>
+      </div>
+      <div className="text-center">
+        <p className="text-rose-400 text-xs font-medium mb-2 uppercase tracking-wide">Right × 2</p>
+        <canvas ref={rRef} className="w-full rounded-xl shadow-lg"/>
+      </div>
+    </div>
+  );
+}
+
+// — Main results ——————————————————————————————————————————————————
+function ResultsPanel({data, onRetake, onHome}) {
+  const [tab,setTab]=React.useState(0);
+  if(!data) return null;
+  const {score,grade,pairs,midline,ipAngle,icAngle,pose,light,photoURL,photoW,photoH}=data;
+  const valid=pairs.filter(p=>p.valid);
+  const TABS=['Heatmap','Metrics','Split Face','Science'];
+
+  return (
+    <div className="flex flex-col min-h-screen bg-slate-950 text-white anim-fade">
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-5 pt-safe pb-3 border-b border-subtle"
+        style={{background:'rgba(15,23,42,0.85)',backdropFilter:'blur(8px)'}}>
+        <button onClick={onHome} className="text-white/50 text-sm hover:text-white transition-colors">← Home</button>
+        <h1 className="text-base font-semibold">Analysis Results</h1>
+        <button onClick={onRetake} className="text-cyan-400 text-sm font-medium">Retake</button>
+      </div>
+
+      {/* Score summary */}
+      <div className="flex flex-col items-center gap-2 px-6 pt-6 pb-4" style={{background:'rgba(15,23,42,0.5)'}}>
+        <ScoreGauge score={score} grade={grade}/>
+        <div className="flex gap-6 mt-1">
+          {[{l:'Roll',v:pose.roll,t:8},{l:'Yaw',v:pose.yaw,t:12},{l:'Pitch',v:pose.pitch,t:10},{l:'IP°',v:ipAngle,t:3}].map(({l,v,t})=>(
+            <div key={l} className="flex flex-col items-center">
+              <span className={`text-sm font-mono font-semibold ${Math.abs(v)<t?'text-emerald-400':'text-amber-400'}`}>
+                {v>0?'+':''}{v}°
+              </span>
+              <span className="text-white/35 text-xs">{l}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex border-b border-subtle sticky top-0 z-10"
+        style={{background:'rgba(15,23,42,0.6)',backdropFilter:'blur(8px)'}}>
+        {TABS.map((t,i)=>(
+          <button key={t} onClick={()=>setTab(i)}
+            className={`flex-1 py-3 text-xs font-medium uppercase tracking-wide transition-colors
+              ${tab===i?'text-cyan-400 border-b-2 border-cyan-400':'text-white/40 hover:text-white/65'}`}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto">
+
+        {/* ── Heatmap tab ── */}
+        {tab===0 && (
+          <div className="p-4 space-y-4 anim-fade">
+            <p className="text-white/40 text-xs text-center">
+              Dots coloured by AI% &nbsp;
+              <span style={{color:'#10b981'}}>■</span> low &nbsp;
+              <span style={{color:'#f59e0b'}}>■</span> moderate &nbsp;
+              <span style={{color:'#f43f5e'}}>■</span> high asymmetry
+            </p>
+            {photoURL && <HeatmapPhoto photoURL={photoURL} photoW={photoW} photoH={photoH} report={data}/>}
+            {light && (
+              <div className={`rounded-xl px-4 py-3 border flex items-start gap-3
+                ${light.ok?'bg-emerald-500/10 border-emerald-500/25':'bg-amber-500/10 border-amber-500/25'}`}>
+                <span className="text-xl">{light.ok?'💡':'⚠️'}</span>
+                <div>
+                  <p className={`text-xs font-semibold ${light.ok?'text-emerald-400':'text-amber-400'}`}>
+                    {light.ok?'Even Lighting':'Uneven Lighting Detected'}
+                  </p>
+                  <p className="text-white/40 text-xs mt-0.5">Left:{light.lL} · Right:{light.lR} · Δ{light.diff}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Metrics tab ── */}
+        {tab===1 && (
+          <div className="p-4 space-y-4 anim-fade">
+            <div>
+              <p className="text-white font-semibold text-sm">Bilateral Asymmetry Index</p>
+              <p className="text-white/30 text-xs font-mono mt-0.5">AI = |dₗ − dᵣ| / [(dₗ+dᵣ)/2] × 100 %</p>
+            </div>
+            {valid.map(p=>{
+              const c=aiColor(p.aiPct), bar=Math.min(p.aiPct*3,100);
+              return (
+                <div key={p.id} className="rounded-xl px-4 py-3 border border-subtle bg-card">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-white/75 text-xs font-medium">{p.label}</span>
+                    <span className="font-mono text-sm font-semibold" style={{color:c}}>{p.aiPct.toFixed(1)}%</span>
+                  </div>
+                  <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full" style={{width:`${bar}%`,background:c,boxShadow:`0 0 6px ${c}88`,transition:'width 0.7s ease'}}/>
+                  </div>
+                  <div className="flex justify-between mt-1.5">
+                    <span className="text-violet-400/60 text-xs font-mono">L: {p.dL}</span>
+                    <span className="text-rose-400/60 text-xs font-mono">R: {p.dR}</span>
+                  </div>
+                </div>
+              );
+            })}
+            <div><p className="text-white font-semibold text-sm pt-2">Horizontal Alignment</p></div>
+            <div className="grid grid-cols-2 gap-3">
+              {[{lbl:'Interpupillary',v:ipAngle,t:3},{lbl:'Intercommissural',v:icAngle,t:3}].map(({lbl,v,t})=>{
+                const c=Math.abs(v)<t?'#10b981':'#f59e0b';
+                return (
+                  <div key={lbl} className="rounded-xl px-4 py-4 border border-subtle bg-card text-center">
+                    <p className="font-mono text-lg font-bold" style={{color:c}}>{v>0?'+':''}{v}°</p>
+                    <p className="text-white/45 text-xs mt-1 leading-tight">{lbl}</p>
+                    <p className="text-xs mt-0.5" style={{color:c}}>{Math.abs(v)<t?'Aligned':'Slight tilt'}</p>
+                  </div>
+                );
+              })}
+            </div>
+            <div><p className="text-white font-semibold text-sm pt-2">Head Pose at Capture</p></div>
+            <div className="grid grid-cols-3 gap-3">
+              {[{l:'Roll',v:pose.roll,t:8},{l:'Yaw',v:pose.yaw,t:12},{l:'Pitch',v:pose.pitch,t:10}].map(({l,v,t})=>{
+                const c=Math.abs(v)<t?'#10b981':'#f59e0b';
+                return (
+                  <div key={l} className="rounded-xl px-3 py-4 border border-subtle bg-card text-center">
+                    <p className="font-mono text-lg font-bold" style={{color:c}}>{v>0?'+':''}{v}°</p>
+                    <p className="text-white/45 text-xs mt-1">{l}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ── Split Face tab ── */}
+        {tab===2 && (
+          <div className="p-4 space-y-4 anim-fade">
+            <p className="text-white/40 text-xs text-center leading-relaxed">
+              Left-Left and Right-Right composites show how your face would look
+              if both halves were perfectly mirrored from that side.
+            </p>
+            {photoURL && <SplitFaceView photoURL={photoURL} photoW={photoW} photoH={photoH} midNorm={midline.Ax}/>}
+            <div className="rounded-xl p-4 border border-amber-500/20" style={{background:'rgba(245,158,11,0.07)'}}>
+              <p className="text-amber-400 text-xs font-semibold mb-1">About Split-Face Analysis</p>
+              <p className="text-white/50 text-xs leading-relaxed">
+                The split-face technique composites each facial half with its own mirror image.
+                Differences between the two composites visually represent bilateral asymmetry and are used in
+                perceptual research on facial attractiveness and health perception.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Science tab ── */}
+        {tab===3 && (
+          <div className="p-4 space-y-4 anim-fade">
+            {[
+              {title:'Midline (Sagittal Plane)', formula:'M = argmin_L Σ d(Pᵢ, L)²',
+               body:'The facial midline M is the principal axis through Glabella (pt.168), Nasal-Bridge (6), Nasal-Tip (4), Subnasale (2) and Menton (152), estimated via 2D PCA covariance eigendecomposition.'},
+              {title:'Point-to-Line Distance', formula:'d(L, M) = ||(L−A) − [(L−A)·d̂] d̂||',
+               body:'For each landmark L, its perpendicular distance to the midline M (anchor A, unit direction d̂) is the magnitude of the vector rejection — the component of (L−A) orthogonal to d̂.'},
+              {title:'Asymmetry Index (AI)', formula:'AI = |d(Lₗ,M) − d(Lᵣ,M)| / [(dₗ+dᵣ)/2] × 100 %',
+               body:'AI expresses the absolute bilateral distance difference as a percentage of mean bilateral distance, following the method of Farkas & Cheung (1981) and Zaidel et al. (1995).'},
+              {title:'Global Asymmetry Score', formula:'GAS = Σ(wᵢ × AIᵢ) / Σwᵢ',
+               body:'Weighted mean AI across all landmark pairs. Optical-axis pairs (pupils w=2.0, alare/mouth w=1.8) are weighted more heavily than peripheral pairs (jaw/brow w=1.0–1.2).'},
+              {title:'Head Pose Estimation', formula:'Roll = −arctan2(Δy_pupils, Δx_pupils)',
+               body:'Roll is the signed angle of the interpupillary line. Yaw is approximated from the ratio (R-width − L-width)/(R+L-width) × 60. Pitch uses the normalised vertical displacement of the nasal tip from facial mid-height.'},
+            ].map(({title,formula,body})=>(
+              <div key={title} className="rounded-2xl px-4 py-4 border border-subtle bg-card space-y-2">
+                <p className="text-cyan-400 text-xs font-semibold uppercase tracking-wide">{title}</p>
+                <p className="font-mono text-xs rounded-lg px-3 py-2" style={{color:'#fde68a',background:'rgba(0,0,0,0.3)'}}>{formula}</p>
+                <p className="text-white/50 text-xs leading-relaxed">{body}</p>
+              </div>
+            ))}
+            <div className="rounded-2xl px-4 py-4 border border-subtle bg-card">
+              <p className="text-white font-semibold text-xs mb-2">Key References</p>
+              <p className="text-white/45 text-xs leading-relaxed">
+                Farkas LG, Cheung G. (1981). Facial asymmetry in healthy North American Caucasians. <em>Angle Orthodontist</em>.<br/>
+                Zaidel DW et al. (1995). Appearance of symmetry, beauty, and health in human faces. <em>Brain and Cognition</em>.<br/>
+                Penton-Voak IS et al. (2001). Symmetry, sexual dimorphism in facial proportions. <em>Proc Royal Soc B</em>.
+              </p>
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* Bottom action row */}
+      <div className="border-t border-subtle px-5 py-3 pb-safe flex gap-3"
+        style={{background:'rgba(15,23,42,0.92)',backdropFilter:'blur(8px)'}}>
+        <button onClick={onRetake}
+          className="flex-1 py-3 rounded-xl font-semibold text-sm text-white active:scale-95 transition-transform"
+          style={{background:'#06b6d4'}}>
+          New Analysis
+        </button>
+        <button onClick={async()=>{
+          const txt=`FaceAnalytics Result\n\nScore: ${score.toFixed(1)}% — ${grade.label}\nRoll:${pose.roll}° Yaw:${pose.yaw}° Pitch:${pose.pitch}°\nInterpupillary: ${ipAngle}°`;
+          if(navigator.share){try{await navigator.share({title:'FaceAnalytics',text:txt});}catch(_){}}
+          else{try{await navigator.clipboard.writeText(txt);alert('Copied to clipboard!');}catch(_){}}
+        }} className="flex-none px-4 py-3 rounded-xl active:scale-95 transition-transform"
+          style={{background:'rgba(255,255,255,0.08)'}}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5 text-white/60">
+            <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/>
+            <polyline points="16 6 12 2 8 6"/>
+            <line x1="12" y1="2" x2="12" y2="15"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ROOT
+// ════════════════════════════════════════════════════════════════════════════
+function App() {
+  const [screen, setScreen] = React.useState('intro');
+  const [data,   setData]   = React.useState(null);
+  return (
+    <div className="min-h-screen bg-slate-950 overflow-hidden">
+      {screen==='intro'  && <IntroScreen  onStart={()=>setScreen('camera')}/>}
+      {screen==='camera' && <CameraView   onCapture={d=>{setData(d);setScreen('results');}} onBack={()=>setScreen('intro')}/>}
+      {screen==='results'&& <ResultsPanel data={data} onRetake={()=>setScreen('camera')} onHome={()=>{setData(null);setScreen('intro');}}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+
+<!-- Minimal PWA service worker registration -->
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () =>
+    navigator.serviceWorker.register('sw.js').catch(()=>{})
+  );
+}
+</script>
+</body>
+</html>

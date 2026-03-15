@@ -1,0 +1,28 @@
+{
+  "name": "FaceAnalytics – Facial Asymmetry Analysis",
+  "short_name": "FaceAnalytics",
+  "description": "Scientific on-device facial asymmetry analysis using MediaPipe Face Mesh.",
+  "theme_color": "#0f172a",
+  "background_color": "#020617",
+  "display": "standalone",
+  "orientation": "portrait",
+  "scope": "/",
+  "start_url": "/",
+  "lang": "en",
+  "categories": ["health", "utilities"],
+  "icons": [
+    { "src": "public/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "public/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "public/icons/icon.svg",     "sizes": "any",     "type": "image/svg+xml" }
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "New Analysis",
+      "short_name": "Analyse",
+      "description": "Start a new facial symmetry analysis",
+      "url": "/",
+      "icons": [{ "src": "public/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
